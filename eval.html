@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>교사용 평가 화면 - 옷장 정리 도우미</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: #f2f3f5; color: #333; padding: 20px; }
+        .header { margin-bottom: 15px; }
+        .header h1 { font-size: 20px; display: inline-block; font-weight: bold; }
+        .header span { font-size: 14px; color: #777; margin-left: 10px; }
+
+        /* 2x2 대시보드 그리드 레이아웃 */
+        .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; max-width: 1200px; margin: 0 auto; }
+        .card { background: white; border-radius: 10px; padding: 20px; border: 1px solid #e1e4e8; box-shadow: 0 2px 5px rgba(0,0,0,0.03); position: relative; }
+        .card-num { position: absolute; top: -10px; left: -10px; background: #e74c3c; color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; }
+        
+        h2 { font-size: 16px; font-weight: bold; margin-bottom: 15px; color: #2c3e50; }
+
+        /* 1구역 */
+        .btn-group { margin-bottom: 10px; }
+        .btn { padding: 8px 16px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: 14px; font-weight: 500; }
+        .btn-primary { background: #2b78e4; color: white; border: none; }
+        .sub-text { font-size: 12px; color: #888; margin-top: 5px; line-height: 1.4; }
+        .accuracy-box { margin-top: 20px; font-size: 18px; font-weight: bold; color: #444; }
+        .accuracy-value { font-size: 32px; color: #2b78e4; margin-left: 5px; }
+
+        /* 2구역 - 막대 그래프 */
+        .bar-container { margin-bottom: 12px; }
+        .bar-label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; font-weight: 500; }
+        .bar-bg { background: #e9ecef; height: 18px; border-radius: 4px; overflow: hidden; }
+        .bar-fill { height: 100%; background: #2b78e4; width: 0%; transition: width 0.5s ease; }
+
+        /* 3구역 - 혼동행렬 표 */
+        table.cm-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+        table.cm-table th, table.cm-table td { border: 1px solid #e9ecef; padding: 10px; text-align: center; }
+        table.cm-table th { background: #f8f9fa; font-weight: bold; }
+        .correct-cell { background-color: #e6f4ea; font-weight: bold; color: #137333; }
+        .incorrect-cell { background-color: #fce8e6; color: #c5221f; }
+
+        /* 4구역 - 오답 사진 카드 */
+        .error-grid { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 5px; }
+        .error-card { min-width: 110px; max-width: 110px; border: 2px solid #ea4335; border-radius: 6px; padding: 5px; text-align: center; background: #fff; }
+        .error-card img { width: 100%; height: 90px; object-fit: cover; border-radius: 4px; background: #ddd; }
+        .error-info { font-size: 11px; margin-top: 4px; color: #555; word-break: break-all; }
+        .error-prob { font-size: 10px; color: #888; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>교사용 평가 화면</h1>
+        <span>옷장 정리 도우미 · 모델 v1</span>
+    </div>
+
+    <div class="dashboard">
+        <!-- 1. 테스트 사진 넣기 -->
+        <div class="card">
+            <div class="card-num">1</div>
+            <h2>1. 테스트 사진 넣기</h2>
+            <div class="btn-group">
+                <input type="file" id="file-input" multiple accept="image/*" style="display:none;" onchange="handleFiles(this.files)">
+                <button class="btn btn-primary" onclick="document.getElementById('file-input').click()">사진 선택</button>
+                <button class="btn" onclick="resetAll()">초기화</button>
+            </div>
+            <div class="sub-text">
+                선택한 사진 <span id="selected-count">0</span>장 · 판정 완료 <span id="evaluated-count">0</span>장<br>
+                파일 이름 규칙: 클래스_번호.jpg (예: 상의_01.jpg, 하의_02.jpg, 양말_01.jpg)
+            </div>
+            <div class="accuracy-box">
+                전체 정확도 <span class="accuracy-value" id="total-accuracy">0.0%</span> <span id="accuracy-fraction" style="font-size:14px; color:#888;">(0/0)</span>
+            </div>
+        </div>
+
+        <!-- 2. 클래스별 정분류율 -->
+        <div class="card">
+            <div class="card-num">2</div>
+            <h2>2. 클래스별 정분류율</h2>
+            <div id="bar-chart-area">
+                <p style="font-size:13px; color:#999;">사진을 등록하면 클래스별 정분류율이 표시됩니다.</p>
+            </div>
+            <button class="btn" style="margin-top:15px;" onclick="downloadCSV()">CSV 내려받기</button>
+        </div>
+
+        <!-- 3. 혼동행렬 -->
+        <div class="card">
+            <div class="card-num">3</div>
+            <h2>3. 혼동행렬 (행: 실제, 열: 예측)</h2>
+            <div id="cm-table-area">
+                <p style="font-size:13px; color:#999;">사진 판정 후 혼동행렬이 도출됩니다.</p>
+            </div>
+        </div>
+
+        <!-- 4. 틀린 사진 모음 -->
+        <div class="card">
+            <div class="card-num">4</div>
+            <h2>4. 틀린 사진 (<span id="error-count-text">0장 중 0장 표시</span>)</h2>
+            <div class="error-grid" id="error-grid-area">
+                <!-- 오답 카드가 가로 스크롤 형태로 추가됨 -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const MODEL_URL = "./my_model/";
+        let model, classNames = [];
+        let evalResults = [];
+
+        async function loadModel() {
+            if (!model) {
+                model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+                classNames = model.getClassLabels();
+            }
+        }
+
+        async function handleFiles(files) {
+            if (!files || files.length === 0) return;
+            await loadModel();
+            
+            document.getElementById("selected-count").innerText = files.length;
+            evalResults = [];
+
+            let correctTotal = 0;
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const img = document.createElement("img");
+                img.src = window.URL.createObjectURL(file);
+                await new Promise(res => img.onload = res);
+
+                // 파일명에서 실제 정답 추출 (예: "상의_01.jpg" -> "상의")
+                const actualClass = file.name.split('_')[0].trim();
+
+                const prediction = await model.predict(img);
+                let highest = prediction[0];
+                for (let p of prediction) {
+                    if (p.probability > highest.probability) highest = p;
+                }
+
+                const isCorrect = (actualClass === highest.className);
+                if (isCorrect) correctTotal++;
+
+                evalResults.push({
+                    filename: file.name,
+                    actual: actualClass,
+                    predicted: highest.className,
+                    confidence: highest.probability,
+                    isCorrect: isCorrect,
+                    imgSrc: img.src
+                });
+
+                document.getElementById("evaluated-count").innerText = i + 1;
+            }
+
+            renderDashboard(correctTotal, files.length);
+        }
+
+        function renderDashboard(correctTotal, total) {
+            // 1. 전체 정확도
+            const accPercent = total > 0 ? ((correctTotal / total) * 100).toFixed(1) : "0.0";
+            document.getElementById("total-accuracy").innerText = accPercent + "%";
+            document.getElementById("accuracy-fraction").innerText = `(${correctTotal}/${total})`;
+
+            // 2. 클래스별 정분류율
+            let barHTML = "";
+            classNames.forEach(cName => {
+                const classItems = evalResults.filter(r => r.actual === cName);
+                const classCorrect = classItems.filter(r => r.isCorrect).length;
+                const classAcc = classItems.length > 0 ? Math.round((classCorrect / classItems.length) * 100) : 0;
+
+                barHTML += `
+                    <div class="bar-container">
+                        <div class="bar-label"><span>${cName}</span><span>${classAcc}%</span></div>
+                        <div class="bar-bg"><div class="bar-fill" style="width: ${classAcc}%;"></div></div>
+                    </div>`;
+            });
+            document.getElementById("bar-chart-area").innerHTML = barHTML;
+
+            // 3. 혼동행렬 생성
+            let cmHTML = `<table class="cm-table"><thead><tr><th></th>`;
+            classNames.forEach(c => cmHTML += `<th>${c}</th>`);
+            cmHTML += `</tr></thead><tbody>`;
+
+            classNames.forEach(actual => {
+                cmHTML += `<tr><th>${actual}</th>`;
+                classNames.forEach(pred => {
+                    const count = evalResults.filter(r => r.actual === actual && r.predicted === pred).length;
+                    const cellClass = (actual === pred) ? 'correct-cell' : (count > 0 ? 'incorrect-cell' : '');
+                    cmHTML += `<td class="${cellClass}">${count}</td>`;
+                });
+                cmHTML += `</tr>`;
+            });
+            cmHTML += `</tbody></table>`;
+            document.getElementById("cm-table-area").innerHTML = cmHTML;
+
+            // 4. 틀린 사진 모음
+            const errors = evalResults.filter(r => !r.isCorrect);
+            document.getElementById("error-count-text").innerText = `${errors.length}장 표시`;
+
+            let errorHTML = "";
+            errors.forEach(e => {
+                errorHTML += `
+                    <div class="error-card">
+                        <img src="${e.imgSrc}">
+                        <div class="error-info">${e.filename}</div>
+                        <div class="error-info" style="color:#d32f2f; font-weight:bold;">→ ${e.predicted}</div>
+                        <div class="error-prob">${(e.confidence * 100).toFixed(0)}%</div>
+                    </div>`;
+            });
+            document.getElementById("error-grid-area").innerHTML = errorHTML || "<p style='font-size:13px; color:#888;'>틀린 사진이 없습니다.</p>";
+        }
+
+        function resetAll() {
+            evalResults = [];
+            document.getElementById("selected-count").innerText = "0";
+            document.getElementById("evaluated-count").innerText = "0";
+            document.getElementById("total-accuracy").innerText = "0.0%";
+            document.getElementById("accuracy-fraction").innerText = "(0/0)";
+            document.getElementById("bar-chart-area").innerHTML = "<p style='font-size:13px; color:#999;'>사진을 등록하면 클래스별 정분류율이 표시됩니다.</p>";
+            document.getElementById("cm-table-area").innerHTML = "<p style='font-size:13px; color:#999;'>사진 판정 후 혼동행렬이 도출됩니다.</p>";
+            document.getElementById("error-grid-area").innerHTML = "";
+            document.getElementById("error-count-text").innerText = "0장 중 0장 표시";
+        }
+
+        function downloadCSV() {
+            if (evalResults.length === 0) { alert('다운로드할 결과가 없습니다.'); return; }
+            let csv = "\uFEFFFilename,Actual,Predicted,Confidence,IsCorrect\n";
+            evalResults.forEach(r => {
+                csv += `"${r.filename}","${r.actual}","${r.predicted}",${(r.confidence*100).toFixed(1)},${r.isCorrect}\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.download = "eval_results.csv";
+            link.click();
+        }
+    </script>
+</body>
+</html>
